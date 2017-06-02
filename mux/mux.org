@@ -1,0 +1,124 @@
+#+TITLE: Mux Code Reading .org file
+#+AUTHOR: Bowen
+#+DATE: 2017-05-27
+
+* 简介
+gorilla/mux 包实现了一个请求路由器和分发器，用于将传入的请求和其各自的处理程序进行匹配。
+名称mux代表HTTP请求多路复用器的意思。
+mux.Router和标准的http.ServeMux一样，将传入的请求和已经注册的路由列表相匹配，并调用与URL或其他条件匹配的路由处理程序。
+** 主要特点
+1. 它实现了http.Handler接口，因此它和标准的http.ServeMux兼容。
+2. 请求可以根据URL的主机名，路径，路径前缀，模式和请求头以及请求的参数，HTTP方法进行匹配，或者可以使用自定义的匹配器进行匹配。
+3. URL的主机名和路径可以具有可选正则表达式的变量。
+4. 可以构建已经注册的URL或者反向，这有助于维护资源的引用。
+5. 路由可以用作子路由：仅在父路由匹配时才测试嵌套路由。这对于定义一个共享通用的条件的路由组， 如主机名，路径前缀或者其他重复属性很有用。作为奖励，这使请求的匹配得到优化。
+
+* 代码结构
+** Router结构体重要的字段
+1. NotFoundhandler 类型是http.Handler,当没有路由匹配时的路由处理程序。
+2. parent 类型是parentRoute接口类型，当路由器是一个子路由器时有用。
+3. routes 类型是Route指针的slice类型，按顺序匹配路由。
+4. namedRouters 是一个map，键是字符串，值是Route结构体指针，按名称存放的路由用于构建已经注册的URL。
+
+** Route结构体保存匹配一个请求和组建已经注册的URL的信息
+1. parent 类型是parentRoute接口类型. (被赋值为路由器)
+2. handler 类型是http.Handler，是这个路由的请求处理器函数
+3. matchers 类型是matcher接口的slice类型，请求匹配信息的列表
+4. regexp 类型是routeRegexpGroup， 是负责管理主机名和url路径中的变量
+
+** RouteMatch结构体保存到的匹配路由的信息
+1. Route 类型是Route指针类型
+2. Handler 类型是http.Handler类型
+3. Vars  类型是map[string]string类型
+
+** routeRegexpGroup结构体是携带变量的路由匹配器的组合
+1. host 类型是routeRegexp指针类型
+2. path 类型是routeregexp指针类型
+3. queries 类型是routeregexp指针的slice类型
+
+** routeRegexp结构体保存一个匹配主机或路径正则表达式以及收集和验证路由变量的信息
+1. template 类型是字符串，未修改的用户定义模板
+2. matchHost 类型是bool，为true代表匹配主机
+3. matchQuery 类型是bool,为true代表匹配查询的字符串
+4. strictSlash 类型是bool, ???
+5. useEncodedPath 类型是bool,确定是否使用来自getPath函数的编码路径或者未编码的req.URL.path进行路径匹配
+6. regexp 类型是regexp.Regexp的指针类型，代表展开的正则表达式
+7. reverse 类型是字符串，代表反向的模板
+8. varsN 类型是字符串的slice类型，代表变量的名称
+9. varsR 类型是regexp.Regexp的指针类型,代表变量的正则表达式
+
+** 使用到的接口
+1. Handler接口（A Handler responds to an HTTP request）
+type Handler interface {
+    ServeHTTP(ResponseWriter, *Request)
+}
+
+2. matcher接口（matcher types try to match a request）
+type matcher interface {
+    Match(*http.Request, *RouteMatch) bool
+}
+
+*** 入口函数
+1. func NewRouter() *Router 返回一个路由器指针（初始化namedRoutes字段，设置KeepContext字段为false）
+2. func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) 实现Handler接口
+   - 定义RouteMatch类型的match和http.Handler接口类型的handler，调用Router的Match方法，给match赋值。
+   - 把match的Handler赋值handler。
+   - 把match的Vars设置到请求的Context()。
+   - 把match的route设置到请求的Context()。
+   - 如果handler是nil的话，赋值为http.NotFoundhandler。
+   - 如果Router的KeepContext字段是false的话， defer contextClear(req)。
+   - 调用handler的ServeHTTP方法，提供处理程序服务。
+3. func (r *Router) Match(req *http.Request, match *RouteMatch) bool 实现matcher接口
+   - 按顺序遍历Router的routes字段, 依次调用route的Match方法。
+   - 如果没有匹配的route, 并且路由器的NotFoundHandler不为nil， 把它赋值给RouteMatch的Handler字段
+4. func (r *Route) Match(req *http.Request, match *RouteMatch) bool 实现matcher接口
+   1. 判断Route的buildOnly和err字段，如果是buildOnly或者err不等于nil直接返回false
+   2. 按顺序遍历Route的matchers字段，调用matcher的Match方法
+   3. 给RouteMatch赋值
+      - 如果RouteMatch的Route字段是nil的话，赋值为r(Route);
+      - 如果RouteMatch的Handler字段是nil的话，赋值为r.handler;
+      - 如果RouteMatch的Vars字段是nil的话，进行初始化，make(map[string][string]);
+   4. 如果Route的regexp字段不为nil的话，调用regexp的setMatch方法设置给RouteMatch的Vars字段赋值
+5. func (v *routeRegexpGroup) setMatch(req *http.Request, m *RouteMatch, r *Route)
+   1. 如果routeRegexpGroup的host字段不为nil的话，使用host.regexp字段调用FindStringSubmatchIndex方法，从请求的host中获取匹配正则的变量的Index,然后调用extractVars方法把主机名中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
+   2. 如果routeRegexpGroup的path字段不为nil的话，使用path.regexp字段调用FindStringSubmatchIndex方法,从请求的path中获取匹配正则的变量的Index,然后调用extractVars方法把path中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
+   3. 遍历routeRegexpGroup的queries字段，依次从请求中获取参数对，使用q.regexp字段调用FindStringSubMatchIndex方法从参数对中获取匹配正则的变量的Index,然后调用extractVars方法把请求参数中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
+
+*** 添加Handler函数
+1. func (r *Router) NewRoute() *Route 生成一个新的空的路由指针，并把该路由指针存放到路由器的routes字段里面。
+2. func (r *Router) Handle(path string, handler http.Handler) *Route 注册一个有URL路径匹配信息的新路由
+   - 首先调用NewRoute方法生成一个空的路由
+   - 调用路由的Path(path)方法
+  func (r *Router) Handle(path string, handler http.Handler) *Route {
+   return r.NewRoute().Path(path).Handler(handler)
+   }
+3. func (r *Router) HandleFunc(path string, f func(http.ResponseWriter,	*http.Request)) *Route 同上
+   func (r *Router) HandleFunc(path string, f func(http.ResponseWriter,	*http.Request)) *Route {
+    return r.NewRoute().Path(path).HandlerFunc(f)
+   }
+
+4. func (r *Route) Path(tpl string) *Route 给路由添加一个路径匹配信息
+   func (r *Route) Path(tpl string) *Route {
+    r.err = r.addRegexpMatcher(tpl, false, false, false)
+    return r
+  }
+
+5. func (r *Route) addRegexpMatcher(tpl string, matchHost, matchPrefix, matchQuery bool) error 给路由添加一个主机名或者路径的匹配器和构建器
+
+4. func (r *Route) Handler(handler http.Handler) *Route 给路由设置一个路由处理器程序
+func (r *Route) Handler(handler http.Handler) *Route {
+    if r.err == nil {
+        r.handler = handler
+    }
+    return r
+}
+5. func (r *Route) HandlerFunc(f func(http.ResponseWriter, *http.Request)) *Route 同上
+func (r *Route) HandlerFunc(f func(http.ResponseWriter, *http.Request)) *Route {
+    return r.Handler(http.HandlerFunc(f))
+}
+6. http.HandlerFunc接口
+type HandlerFunc func(ResponseWriter, *Request)
+
+func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) {
+    f(w, r)
+}

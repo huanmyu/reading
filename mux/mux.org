@@ -58,6 +58,15 @@ type matcher interface {
     Match(*http.Request, *RouteMatch) bool
 }
 
+3. HandlerFunc函数类型实现Handler接口
+type HandlerFunc func(ResponseWriter, *Request)
+
+func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) {
+    f(w, r)
+}
+
+
+
 *** 入口函数
 1. func NewRouter() *Router 返回一个路由器指针（初始化namedRoutes字段，设置KeepContext字段为false）
 2. func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) 实现Handler接口
@@ -73,22 +82,26 @@ type matcher interface {
    - 如果没有匹配的route, 并且路由器的NotFoundHandler不为nil， 把它赋值给RouteMatch的Handler字段
 4. func (r *Route) Match(req *http.Request, match *RouteMatch) bool 实现matcher接口
    1. 判断Route的buildOnly和err字段，如果是buildOnly或者err不等于nil直接返回false
-   2. 按顺序遍历Route的matchers字段，调用matcher的Match方法
+   2. 按顺序遍历Route的matchers字段，调用matcher的Match方法,如果匹配到路由，就根据路由信息进入第3步
    3. 给RouteMatch赋值
       - 如果RouteMatch的Route字段是nil的话，赋值为r(Route);
       - 如果RouteMatch的Handler字段是nil的话，赋值为r.handler;
       - 如果RouteMatch的Vars字段是nil的话，进行初始化，make(map[string][string]);
    4. 如果Route的regexp字段不为nil的话，调用regexp的setMatch方法设置给RouteMatch的Vars字段赋值
 5. func (v *routeRegexpGroup) setMatch(req *http.Request, m *RouteMatch, r *Route)
-   1. 如果routeRegexpGroup的host字段不为nil的话，使用host.regexp字段调用FindStringSubmatchIndex方法，从请求的host中获取匹配正则的变量的Index,然后调用extractVars方法把主机名中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
-   2. 如果routeRegexpGroup的path字段不为nil的话，使用path.regexp字段调用FindStringSubmatchIndex方法,从请求的path中获取匹配正则的变量的Index,然后调用extractVars方法把path中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
-   3. 遍历routeRegexpGroup的queries字段，依次从请求中获取参数对，使用q.regexp字段调用FindStringSubMatchIndex方法从参数对中获取匹配正则的变量的Index,然后调用extractVars方法把请求参数中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
+   1. 如果routeRegexpGroup的host字段不为nil的话，使用host.regexp字段调用FindStringSubmatchIndex方法，
+从请求的host中获取匹配正则的变量的Index,然后调用extractVars方法把主机名中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
+   2. 如果routeRegexpGroup的path字段不为nil的话，使用path.regexp字段调用FindStringSubmatchIndex方法,
+从请求的path中获取匹配正则的变量的Index,然后调用extractVars方法把path中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
+   3. 遍历routeRegexpGroup的queries字段，依次从请求中获取参数对，使用query.regexp字段调用FindStringSubMatchIndex方法从参数对中获取匹配正则的变量的Index,
+然后调用extractVars方法把请求参数中的变量名称和变量值赋值到RouteMatch的Vars字段里面。
 
 *** 添加Handler函数
 1. func (r *Router) NewRoute() *Route 生成一个新的空的路由指针，并把该路由指针存放到路由器的routes字段里面。
 2. func (r *Router) Handle(path string, handler http.Handler) *Route 注册一个有URL路径匹配信息的新路由
    - 首先调用NewRoute方法生成一个空的路由
-   - 调用路由的Path(path)方法
+   - 调用路由的Path(path)方法,把路径信息通过路由的addRegexpMatcher方法添加到路由的matchers字段里面。
+   - 调用路由的Handler(handler)方法，把路由处理函数添加到路由的handler字段里面。
   func (r *Router) Handle(path string, handler http.Handler) *Route {
    return r.NewRoute().Path(path).Handler(handler)
    }
@@ -96,9 +109,22 @@ type matcher interface {
    func (r *Router) HandleFunc(path string, f func(http.ResponseWriter,	*http.Request)) *Route {
     return r.NewRoute().Path(path).HandlerFunc(f)
    }
+4. func (r *Router) Headers(pairs ...string) *Route 注册一个有请求头匹配信息的新路由
+   - 首先调用NewRoute方法生成一个空的路由,把该路由存放到路由器的routes字段里面，之后按顺序匹配寻找路由处理程序。
+   - 调用路由的Headers（pairs）方法，把请求头信息转换成headerMatcher的特定map类型或者headerRegexMatcher带正则信息的特定map类型，
+通过公共的addMatcher方法把它添加到路由的matchers字段里面。
+5. func (r *Router) Host(tpl string) *Route 注册一个有主机名匹配信息的新路由
+   - 首先调用NewRoute方法生成一个空的路由,同上
+   - 调用路由的Host(tpl)方法,把主机名通过路由的addRegexpMatcher方法添加到路由的matchers字段里面。
+6. func (r *Router) MatcherFunc(f MatcherFunc) *Route 注册一个有自定义匹配函数的新路由。
+   - 同上
+   - 调用路由的MatcherFunc(f)方法，把一个MatcherFunc类型的自定义函数，通过公共的addMatcher方法把它添加到路由的matchers字段里面.
+7. func (r *Router) Methods(methods ...string) *Route 注册一个有请求类型匹配信息的新路由。
+   - 同上
+   - 调用路由的Methods(methods)方法，把请求类型信息转换成methodMatcher的特定的字符串slice类型，通过公共的addMatcher方法把它添加到路由的matchers字段里面.
+6. func (r *Route) Path(tpl string) *Route 给路由添加一个路径匹配信息
 
-4. func (r *Route) Path(tpl string) *Route 给路由添加一个路径匹配信息
-   func (r *Route) Path(tpl string) *Route {
+  func (r *Route) Path(tpl string) *Route {
     r.err = r.addRegexpMatcher(tpl, false, false, false)
     return r
   }
@@ -115,10 +141,4 @@ func (r *Route) Handler(handler http.Handler) *Route {
 5. func (r *Route) HandlerFunc(f func(http.ResponseWriter, *http.Request)) *Route 同上
 func (r *Route) HandlerFunc(f func(http.ResponseWriter, *http.Request)) *Route {
     return r.Handler(http.HandlerFunc(f))
-}
-6. http.HandlerFunc接口
-type HandlerFunc func(ResponseWriter, *Request)
-
-func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) {
-    f(w, r)
 }
